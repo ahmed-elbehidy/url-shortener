@@ -6,18 +6,59 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	_ "modernc.org/sqlite"
 )
 
 var db *sql.DB
-
-// Add the channel for synchronization
 var clickChan = make(chan int, 1000)
 
 type shortenRequest struct {
 	URL string `json:"url"`
+}
+
+type visitor struct {
+	tokens     int
+	lastRefill time.Time
+}
+
+var visitors = make(map[string]*visitor)
+var mu sync.Mutex
+
+func rateLimiter(capacity int, refillRate time.Duration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ip := c.ClientIP()
+		mu.Lock()
+
+		v, exists := visitors[ip]
+		if !exists {
+			v = &visitor{tokens: capacity, lastRefill: time.Now()}
+			visitors[ip] = v
+		} else {
+			elapsed := time.Since(v.lastRefill)
+			tokensToAdd := int(elapsed / refillRate)
+			if tokensToAdd > 0 {
+				v.tokens += tokensToAdd
+				if v.tokens > capacity {
+					v.tokens = capacity
+				}
+				v.lastRefill = time.Now()
+			}
+		}
+
+		if v.tokens > 0 {
+			v.tokens--
+			mu.Unlock()
+			c.Next()
+		} else {
+			mu.Unlock()
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "Too many requests. Please try again later."})
+			c.Abort()
+		}
+	}
 }
 
 func initDB() {
@@ -45,7 +86,6 @@ func initDB() {
 	}
 }
 
-// Adding the worker that runs in the background.
 func clickWorker() {
 	for id := range clickChan {
 		_, err := db.Exec("UPDATE urls SET clicks = clicks + 1 WHERE id = ?", id)
@@ -109,14 +149,12 @@ func redirectURL(c *gin.Context) {
 	var originalURL string
 	var id int
 
-	// The query retrieves the original_url to perform the redirect.
 	err := db.QueryRow("SELECT id, original_url FROM urls WHERE short_code = ?", shortCode).Scan(&id, &originalURL)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "URL not found"})
 		return
 	}
 
-	// Sending the channel ID in the background
 	select {
 	case clickChan <- id:
 	default:
@@ -132,6 +170,8 @@ func main() {
 	go clickWorker()
 
 	r := gin.Default()
+
+	r.Use(rateLimiter(3, 10*time.Second))
 
 	r.POST("/shorten", shortenURL)
 	r.GET("/:code", redirectURL)
