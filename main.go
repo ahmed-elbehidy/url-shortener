@@ -13,6 +13,9 @@ import (
 
 var db *sql.DB
 
+// Add the channel for synchronization
+var clickChan = make(chan int, 1000)
+
 type shortenRequest struct {
 	URL string `json:"url"`
 }
@@ -39,6 +42,16 @@ func initDB() {
 	_, err = db.Exec(createTableSQL)
 	if err != nil {
 		log.Fatal("Error creating the table:", err)
+	}
+}
+
+// Adding the worker that runs in the background.
+func clickWorker() {
+	for id := range clickChan {
+		_, err := db.Exec("UPDATE urls SET clicks = clicks + 1 WHERE id = ?", id)
+		if err != nil {
+			log.Println("Error updating click count:", err)
+		}
 	}
 }
 
@@ -103,12 +116,20 @@ func redirectURL(c *gin.Context) {
 		return
 	}
 
+	// Sending the channel ID in the background
+	select {
+	case clickChan <- id:
+	default:
+	}
+
 	c.Redirect(http.StatusFound, originalURL)
 }
 
 func main() {
 	initDB()
 	defer db.Close()
+
+	go clickWorker()
 
 	r := gin.Default()
 
