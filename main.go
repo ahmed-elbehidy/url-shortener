@@ -2,13 +2,20 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
+	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	_ "modernc.org/sqlite"
 )
 
 var db *sql.DB
+
+type shortenRequest struct {
+	URL string `json:"url"`
+}
 
 func initDB() {
 	var err error
@@ -35,7 +42,7 @@ func initDB() {
 	}
 }
 
-// 3. Base62 Algorithm
+// Base62 Algorithm
 func generateShortCode(id int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	const base = 62
@@ -57,7 +64,57 @@ func generateShortCode(id int) string {
 	return reversed
 }
 
+// Building API Endpoints
+func shortenURL(c *gin.Context) {
+	var req shortenRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.URL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request."})
+		return
+	}
+
+	result, err := db.Exec("INSERT INTO urls (original_url, short_code) VALUES (?, ?)", req.URL, "")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+
+	id, _ := result.LastInsertId()
+	shortCode := generateShortCode(int(id))
+
+	_, err = db.Exec("UPDATE urls SET short_code = ? WHERE id = ?", shortCode, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update short code"})
+		return
+	}
+
+	shortURL := fmt.Sprintf("http://localhost:8080/%s", shortCode)
+	c.JSON(http.StatusOK, gin.H{"original_url": req.URL, "short_url": shortURL})
+}
+
+func redirectURL(c *gin.Context) {
+	shortCode := c.Param("code")
+	var originalURL string
+	var id int
+
+	// The query retrieves the original_url to perform the redirect.
+	err := db.QueryRow("SELECT id, original_url FROM urls WHERE short_code = ?", shortCode).Scan(&id, &originalURL)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "URL not found"})
+		return
+	}
+
+	c.Redirect(http.StatusFound, originalURL)
+}
+
 func main() {
 	initDB()
 	defer db.Close()
+
+	r := gin.Default()
+
+	r.POST("/shorten", shortenURL)
+	r.GET("/:code", redirectURL)
+
+	fmt.Println("Server is running on http://localhost:8080")
+	r.Run(":8080")
 }
