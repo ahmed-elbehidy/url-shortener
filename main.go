@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"log"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -32,6 +33,28 @@ func initDB() {
 	if err != nil {
 		log.Fatal("Error creating the table:", err)
 	}
+}
+
+// 3. Base62 Algorithm
+func generateShortCode(id int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const base = 62
+
+	if id == 0 {
+		return string(charset[0])
+	}
+	var shortCodeBuilder strings.Builder
+	for id > 0 {
+		remainder := id % base
+		shortCodeBuilder.WriteByte(charset[remainder])
+		id = id / base
+	}
+	result := shortCodeBuilder.String()
+	reversed := ""
+	for i := len(result) - 1; i >= 0; i-- {
+		reversed += string(result[i])
+	}
+	return reversed
 }
 
 func main() {
